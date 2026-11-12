@@ -1,0 +1,46 @@
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Local settings and credentials
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Primitive binary (install locally; do not commit executables)
+tools/primitive
+tools/primitive.exe
+
+# Generated media and saved projects
+outputs/
+output/
+exports/
+export/
+renders/
+render/
+results/
+*.mp4
+*.mov
+*.webm
+*.avi
+*.gif
+*.zip
+
+# Keep example images in examples/ under version control.
