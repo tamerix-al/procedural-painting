@@ -4,6 +4,7 @@ from __future__ import annotations
 from hashlib import sha256
 from io import BytesIO
 import json
+import os
 from pathlib import Path
 import tempfile
 
@@ -14,7 +15,7 @@ import streamlit as st
 from painting.engine import BUILTIN_STYLES, STYLES, build_painting
 from painting.graphic import GRAPHIC_STYLES, build_graphic_painting
 from painting.layout import LayoutOptions, preview_layout
-from painting.primitive_backend import PRIMITIVE_MODES, locate_primitive, run_primitive
+from painting.primitive_backend import PRIMITIVE_MODES, install_primitive_if_missing, locate_primitive, run_primitive
 from painting.project_io import export_project, import_project
 from painting.video import RESOLUTIONS, REVEAL_MODES, STROKE_TIMINGS, export_video
 
@@ -60,11 +61,26 @@ with st.sidebar:
     available=True
     if is_primitive:
         auto_bin=locate_primitive()
-        if auto_bin:
-            st.success(f'Primitive найден: {auto_bin.name}')
-        else:
-            st.warning('Primitive пока не установлен. Запусти setup_primitive_windows.bat в папке проекта.')
-        binary_path=st.text_input('Путь к primitive.exe (необязательно)',value='',placeholder='D:\\...\\primitive.exe')
+        if auto_bin is None and os.name != 'nt':
+            # Community Cloud runs Linux. Build the upstream Go CLI once for
+            # this server instance instead of displaying Windows instructions.
+            if not st.session_state.get('primitive_install_error'):
+                with st.spinner('Устанавливаю Primitive (Go) на сервере...'):
+                    try:
+                        auto_bin=install_primitive_if_missing()
+                    except RuntimeError as exc:
+                        st.session_state.primitive_install_error=str(exc)
+            if st.session_state.get('primitive_install_error') and auto_bin is None:
+                st.warning(st.session_state.primitive_install_error)
+                if st.button('Повторить установку Primitive'):
+                    st.session_state.pop('primitive_install_error', None)
+                    st.rerun()
+        if auto_bin is not None:
+            st.success(f'Primitive готов: {auto_bin.name}')
+        elif os.name == 'nt':
+            st.warning('Primitive не установлен. Запусти setup_primitive_windows.bat в папке проекта.')
+        if os.name == 'nt':
+            binary_path=st.text_input('Путь к primitive.exe (необязательно)',value='',placeholder='D:\\...\\primitive.exe')
         available=locate_primitive(binary_path) is not None
         profile=st.selectbox('Качество поиска',('Проверка','Стандарт','Детально','Очень детально'),index=1)
         presets={'Проверка':(70,256),'Стандарт':(180,360),'Детально':(350,512),'Очень детально':(650,640)}

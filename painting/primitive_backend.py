@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import threading
 import tempfile
 from typing import Callable
 import xml.etree.ElementTree as ET
@@ -54,6 +55,65 @@ def locate_primitive(explicit: str | None = None) -> Path | None:
         if candidate.is_file():
             return candidate.resolve()
     return None
+
+
+
+_INSTALL_LOCK = threading.Lock()
+
+
+def install_primitive_if_missing(timeout: int = 300) -> Path:
+    """Install the upstream CLI on Linux/macOS when Go is available.
+
+    Intended for Streamlit Community Cloud. The binary is installed into
+    tools/primitive and reused until the container is rebuilt.
+    On Windows the existing setup_primitive_windows.bat remains the installer.
+    """
+    existing = locate_primitive()
+    if existing is not None:
+        return existing
+    if os.name == 'nt':
+        raise RuntimeError('Для Windows запусти setup_primitive_windows.bat.')
+    go = shutil.which('go')
+    if go is None:
+        raise RuntimeError('Go не найден. Для Streamlit Cloud добавь golang-go в packages.txt.')
+
+    with _INSTALL_LOCK:
+        existing = locate_primitive()
+        if existing is not None:
+            return existing
+        root = Path(__file__).resolve().parent.parent
+        out_dir = root / 'tools'
+        out_dir.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+        env['GOBIN'] = str(out_dir)
+        try:
+            version = subprocess.run([go, 'version'], capture_output=True, text=True,
+                                     timeout=15, check=True).stdout
+            match = re.search(r'\bgo(\d+)\.(\d+)', version)
+            legacy = match is not None and tuple(map(int, match.groups())) < (1, 16)
+            if legacy:
+                # Go 1.15 (Debian bullseye) does not support `go install pkg@latest`.
+                env['GO111MODULE'] = 'off'
+                command = [go, 'get', '-u', 'github.com/fogleman/primitive']
+            else:
+                command = [go, 'install', 'github.com/fogleman/primitive@latest']
+            result = subprocess.run(command, capture_output=True, text=True,
+                                    env=env, cwd=root, timeout=timeout, check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError('Сборка Primitive превысила допустимое время. Проверь логи приложения.') from exc
+        except subprocess.CalledProcessError as exc:
+            details = (exc.stderr or exc.stdout or str(exc))[-1000:]
+            raise RuntimeError(f'Ошибка проверки Go: {details}') from exc
+        except OSError as exc:
+            raise RuntimeError(f'Не удалось запустить Go: {exc}') from exc
+        if result.returncode != 0:
+            message = (result.stderr or result.stdout).strip()[-1600:]
+            raise RuntimeError(f'Ошибка установки Primitive (Go): {message}')
+        executable = out_dir / 'primitive'
+        if not executable.is_file():
+            raise RuntimeError('Go завершил сборку без ошибки, но tools/primitive не найден.')
+        executable.chmod(executable.stat().st_mode | 0o111)
+        return executable
 
 
 def _num(value: str | None, fallback: float = 0.0) -> float:
@@ -228,7 +288,7 @@ def run_primitive(
     """
     binary=locate_primitive(executable)
     if binary is None:
-        raise FileNotFoundError('Не найден primitive.exe. Установи Go и запусти setup_primitive_windows.bat или укажи путь к primitive.exe.')
+        raise FileNotFoundError('Primitive не установлен: на Windows запусти setup_primitive_windows.bat, в Streamlit Cloud проверь packages.txt и логи установки Go.')
     if style not in PRIMITIVE_MODES:
         raise ValueError(f'Неподдерживаемая техника Primitive: {style}')
     if count<1 or analysis_size<32:
