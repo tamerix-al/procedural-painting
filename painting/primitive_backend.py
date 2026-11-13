@@ -60,13 +60,32 @@ def locate_primitive(explicit: str | None = None) -> Path | None:
 
 _INSTALL_LOCK = threading.Lock()
 
+# Primitive does not publish a go.mod with pinned dependencies.  Building it
+# with `go install github.com/fogleman/primitive@latest` pulls the newest
+# golang.org/x/image, which currently requires a newer Go than the version
+# provided by Streamlit Cloud's Debian environment.  Build it in a temporary
+# Go module with known-compatible dependencies instead.
+PRIMITIVE_BUILD_GO_MOD = """module procedural-painting/primitive-bootstrap
+
+go 1.23.0
+
+require (
+    github.com/fogleman/primitive v0.0.0-20200504002142-0373c216458b
+    github.com/fogleman/gg v1.3.0
+    github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0
+    github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646
+    golang.org/x/image v0.27.0
+    golang.org/x/text v0.25.0
+)
+"""
+
 
 def install_primitive_if_missing(timeout: int = 300) -> Path:
-    """Install the upstream CLI on Linux/macOS when Go is available.
+    """Build Primitive on Linux/macOS using pinned Go dependencies.
 
-    Intended for Streamlit Community Cloud. The binary is installed into
-    tools/primitive and reused until the container is rebuilt.
-    On Windows the existing setup_primitive_windows.bat remains the installer.
+    Streamlit Cloud can reuse the binary for as long as its instance exists;
+    a fresh server image may repeat the build. On Windows the original .bat
+    installer is still used.
     """
     existing = locate_primitive()
     if existing is not None:
@@ -84,36 +103,34 @@ def install_primitive_if_missing(timeout: int = 300) -> Path:
         root = Path(__file__).resolve().parent.parent
         out_dir = root / 'tools'
         out_dir.mkdir(parents=True, exist_ok=True)
+        output = out_dir / 'primitive'
         env = os.environ.copy()
-        env['GOBIN'] = str(out_dir)
+        env['GOTOOLCHAIN'] = 'local'
         try:
-            version = subprocess.run([go, 'version'], capture_output=True, text=True,
-                                     timeout=15, check=True).stdout
-            match = re.search(r'\bgo(\d+)\.(\d+)', version)
-            legacy = match is not None and tuple(map(int, match.groups())) < (1, 16)
-            if legacy:
-                # Go 1.15 (Debian bullseye) does not support `go install pkg@latest`.
-                env['GO111MODULE'] = 'off'
-                command = [go, 'get', '-u', 'github.com/fogleman/primitive']
-            else:
-                command = [go, 'install', 'github.com/fogleman/primitive@latest']
-            result = subprocess.run(command, capture_output=True, text=True,
-                                    env=env, cwd=root, timeout=timeout, check=False)
+            # A private module makes go build honor the explicitly pinned
+            # versions. The @latest form of go install ignores the local go.mod.
+            with tempfile.TemporaryDirectory(prefix='painting_primitive_go_') as tmp:
+                build_dir = Path(tmp)
+                (build_dir / 'go.mod').write_text(PRIMITIVE_BUILD_GO_MOD, encoding='utf-8')
+                temp_binary = build_dir / 'primitive'
+                command = [go, 'build', '-mod=mod', '-o', str(temp_binary),
+                           'github.com/fogleman/primitive']
+                result = subprocess.run(command, capture_output=True, text=True,
+                                        env=env, cwd=build_dir, timeout=timeout,
+                                        check=False)
+                if result.returncode != 0:
+                    message = (result.stderr or result.stdout).strip()[-1800:]
+                    raise RuntimeError(f'Ошибка установки Primitive (Go): {message}')
+                if not temp_binary.is_file():
+                    raise RuntimeError('Go завершил сборку, но исполняемый файл Primitive не найден.')
+                temp_binary.chmod(temp_binary.stat().st_mode | 0o111)
+                # Publish only a completely built binary.
+                os.replace(temp_binary, output)
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError('Сборка Primitive превысила допустимое время. Проверь логи приложения.') from exc
-        except subprocess.CalledProcessError as exc:
-            details = (exc.stderr or exc.stdout or str(exc))[-1000:]
-            raise RuntimeError(f'Ошибка проверки Go: {details}') from exc
         except OSError as exc:
             raise RuntimeError(f'Не удалось запустить Go: {exc}') from exc
-        if result.returncode != 0:
-            message = (result.stderr or result.stdout).strip()[-1600:]
-            raise RuntimeError(f'Ошибка установки Primitive (Go): {message}')
-        executable = out_dir / 'primitive'
-        if not executable.is_file():
-            raise RuntimeError('Go завершил сборку без ошибки, но tools/primitive не найден.')
-        executable.chmod(executable.stat().st_mode | 0o111)
-        return executable
+        return output
 
 
 def _num(value: str | None, fallback: float = 0.0) -> float:
