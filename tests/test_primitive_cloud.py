@@ -1,4 +1,6 @@
 """Offline tests for Streamlit Community Cloud's Primitive bootstrap."""
+import errno
+import os
 import subprocess
 import tempfile
 import unittest
@@ -42,6 +44,36 @@ class TestPrimitiveCloudSetup(unittest.TestCase):
                 self.assertEqual(backend.install_primitive_if_missing(), binary)
                 self.assertTrue(binary.stat().st_mode & 0o111)
                 self.assertEqual(binary.read_bytes(), b'fake primitive executable')
+
+    def test_install_handles_cross_device_replace(self):
+        # Streamlit Cloud mounts /tmp and /mount/src on separate filesystems.
+        # Simulate EXDEV unless the rename stays inside the target directory.
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            binary = root / 'tools' / 'primitive'
+            real_replace = os.replace
+
+            def reject_cross_device(src, dst):
+                if Path(src).parent != Path(dst).parent:
+                    raise OSError(errno.EXDEV, 'Invalid cross-device link')
+                return real_replace(src, dst)
+
+            def build(args, **kwargs):
+                Path(args[4]).write_bytes(b'compiled for linux')
+                return subprocess.CompletedProcess(args, 0, '', '')
+
+            with patch.object(backend, '__file__', str(root / 'painting' / 'primitive_backend.py')), \
+                 patch.object(backend, 'locate_primitive', side_effect=lambda: binary if binary.is_file() else None), \
+                 patch.object(backend.shutil, 'which', return_value='/usr/bin/go'), \
+                 patch.object(backend.subprocess, 'run', side_effect=build), \
+                 patch.object(backend.os, 'replace', side_effect=reject_cross_device) as replace:
+                self.assertEqual(backend.install_primitive_if_missing(), binary)
+                self.assertEqual(binary.read_bytes(), b'compiled for linux')
+                self.assertTrue(binary.stat().st_mode & 0o111)
+                self.assertEqual(replace.call_count, 1)
+                self.assertEqual(Path(replace.call_args.args[0]).parent, binary.parent)
+                self.assertEqual(Path(replace.call_args.args[1]), binary)
+                self.assertEqual(list(binary.parent.glob('.primitive-install-*.tmp')), [])
 
     def test_build_failure_is_reported_without_creating_binary(self):
         with tempfile.TemporaryDirectory() as folder:

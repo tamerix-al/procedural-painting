@@ -124,8 +124,24 @@ def install_primitive_if_missing(timeout: int = 300) -> Path:
                 if not temp_binary.is_file():
                     raise RuntimeError('Go завершил сборку, но исполняемый файл Primitive не найден.')
                 temp_binary.chmod(temp_binary.stat().st_mode | 0o111)
-                # Publish only a completely built binary.
-                os.replace(temp_binary, output)
+                # /tmp and the app directory may be on different mounted
+                # filesystems (e.g. Streamlit Community Cloud). os.replace()
+                # across these filesystems fails with EXDEV. Copy the completed
+                # binary into a temporary file beside its final destination,
+                # then atomically replace it within that same filesystem.
+                staging_path = None
+                try:
+                    fd, staging_name = tempfile.mkstemp(
+                        prefix='.primitive-install-', suffix='.tmp', dir=out_dir,
+                    )
+                    os.close(fd)
+                    staging_path = Path(staging_name)
+                    shutil.copy2(temp_binary, staging_path)
+                    staging_path.chmod(staging_path.stat().st_mode | 0o111)
+                    os.replace(staging_path, output)
+                finally:
+                    if staging_path is not None:
+                        staging_path.unlink(missing_ok=True)
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError('Сборка Primitive превысила допустимое время. Проверь логи приложения.') from exc
         except OSError as exc:
