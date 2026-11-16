@@ -1,2 +1,5 @@
 golang-go
 git
+golang-go
+git
+fonts-dejavu-core
