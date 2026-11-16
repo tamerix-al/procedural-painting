@@ -23,6 +23,11 @@ REVEAL_MODES = {
     'crossfade': 'Crossfade — плавное растворение',
 }
 
+INTRO_MODES = {
+    'fade_out': 'Fade Out — плавное растворение',
+    'soft_wipe_out': 'Soft Wipe Out — мягкое стирание слева направо',
+}
+
 STROKE_TIMINGS = {
     'uniform': 'Равномерно',
     'moderate': 'Умеренное ускорение в конце',
@@ -89,6 +94,19 @@ def transition_frame(painted: np.ndarray, original: np.ndarray,
     return result
 
 
+def intro_transition_frame(original: np.ndarray, empty_canvas: np.ndarray,
+                           mode: str, progress: float) -> np.ndarray:
+    """Fade or softly wipe the original into the actual empty drawing canvas.
+
+    Only artwork pixels are transitioned; the frame, labels and header remain
+    fixed throughout the intro. Endpoints are exact to avoid flashes.
+    """
+    if mode not in INTRO_MODES:
+        raise ValueError(f'Неизвестный переход вступления: {mode}')
+    reveal_mode = 'crossfade' if mode == 'fade_out' else 'soft_wipe'
+    return transition_frame(original, empty_canvas, reveal_mode, progress)
+
+
 def export_video(
     painting: Painting, original_rgb: np.ndarray, output_path: str | Path,
     seconds: float = 20, fps: int = 30,
@@ -102,6 +120,10 @@ def export_video(
     reveal_seconds: float = 1.0,
     pre_reveal_hold_seconds: float = 0.5,
     stroke_timing: str = 'moderate',
+    show_intro: bool = False,
+    intro_mode: str = 'soft_wipe_out',
+    intro_hold_seconds: float = 0.8,
+    intro_transition_seconds: float = 0.6,
 ) -> Path:
     """Draw vector geometry at final video resolution, then animate the reveal.
 
@@ -114,6 +136,10 @@ def export_video(
         raise ValueError('CRF должен быть в пределах 12–30')
     if min(original_hold_seconds,pre_reveal_hold_seconds,reveal_seconds) < 0:
         raise ValueError('Длительности перехода и паузы не могут быть отрицательными')
+    if intro_hold_seconds < 0 or intro_transition_seconds < 0:
+        raise ValueError('Длительности вступления не могут быть отрицательными')
+    if intro_mode not in INTRO_MODES:
+        raise ValueError(f'Неизвестный переход вступления: {intro_mode}')
     if reveal_mode not in REVEAL_MODES:
         raise ValueError(f'Неизвестный переход: {reveal_mode}')
     if stroke_timing not in STROKE_TIMINGS:
@@ -139,7 +165,11 @@ def export_video(
     pause_frames=max(0,round(fps*pre_reveal_hold_seconds)) if show_original else 0
     reveal_frames=max(2,round(fps*reveal_seconds)) if show_original else 0
     hold_frames=max(0,round(fps*original_hold_seconds)) if show_original else 0
-    total_frames=paint_frames+pause_frames+reveal_frames+hold_frames
+    intro_hold_frames=max(0,round(fps*intro_hold_seconds)) if show_intro else 0
+    intro_transition_frames=(max(2,round(fps*intro_transition_seconds))
+                             if show_intro and intro_transition_seconds>0 else 0)
+    total_frames=(intro_hold_frames+intro_transition_frames+paint_frames+
+                  pause_frames+reveal_frames+hold_frames)
 
     writer=imageio.get_writer(str(path),format='FFMPEG',fps=fps,codec='libx264',
                               macro_block_size=None,quality=None,
@@ -153,6 +183,15 @@ def export_video(
             progress(completed,total_frames)
 
     try:
+        if show_intro:
+            empty_art=np.clip(canvas,0,255).astype(np.uint8)
+            # The framing and labels remain stable in all phases.
+            for _ in range(intro_hold_frames):
+                add_frame(original_full,0)
+            for i in range(intro_transition_frames):
+                fraction=(i+1)/intro_transition_frames
+                art=intro_transition_frame(original_full,empty_art,intro_mode,fraction)
+                add_frame(art,0)
         for i in range(paint_frames):
             position=total*stroke_progress((i+1)/paint_frames,stroke_timing)
             if painting.style in ('oil','dry_brush'):

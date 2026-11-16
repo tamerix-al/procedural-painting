@@ -17,7 +17,7 @@ from painting.graphic import GRAPHIC_STYLES, build_graphic_painting
 from painting.layout import LayoutOptions, preview_layout
 from painting.primitive_backend import PRIMITIVE_MODES, install_primitive_if_missing, locate_primitive, run_primitive
 from painting.project_io import export_project, import_project
-from painting.video import RESOLUTIONS, REVEAL_MODES, STROKE_TIMINGS, export_video
+from painting.video import INTRO_MODES, RESOLUTIONS, REVEAL_MODES, STROKE_TIMINGS, export_video
 
 st.set_page_config(page_title='Procedural Painting 0.10',page_icon='🎨',layout='wide')
 st.title('Procedural Painting')
@@ -142,6 +142,19 @@ with st.sidebar:
     fps=st.selectbox('FPS',[24,30,60],index=1)
     resolution_label=st.selectbox('Разрешение',list(RESOLUTIONS),index=2)
     crf=st.slider('Сжатие H.264 (меньше = качественнее)',14,25,17)
+    # Optional intro uses the original painting and the same drawing canvas.
+    st.markdown('**Вступление перед рисованием**')
+    show_intro = st.checkbox('Показать готовую картину в начале', value=True,
+                             help='Оригинал сначала появляется в готовом оформлении, затем исчезает перед рисованием.')
+    if show_intro:
+        intro_hold_seconds = st.slider('Показ картины в начале (сек)', 0.3, 3.0, 0.8, 0.1)
+        intro_mode = st.selectbox('Как исчезает картина', list(INTRO_MODES), index=1,
+                                  format_func=lambda key: INTRO_MODES[key])
+        intro_transition_seconds = st.slider('Длительность исчезновения (сек)', 0.2, 2.0, 0.6, 0.1)
+    else:
+        intro_hold_seconds = 0.0
+        intro_mode = 'soft_wipe_out'
+        intro_transition_seconds = 0.0
     st.markdown('**Анимация и финал**')
     stroke_timing=st.selectbox('Скорость появления мазков',list(STROKE_TIMINGS),index=1,
                                format_func=lambda key:STROKE_TIMINGS[key],
@@ -302,7 +315,10 @@ if export and model is not None:
                          stroke_timing=stroke_timing,reveal_mode=reveal_mode,
                          reveal_seconds=reveal_seconds,
                          pre_reveal_hold_seconds=pre_reveal_hold_seconds,
-                         original_hold_seconds=original_hold_seconds)
+                         original_hold_seconds=original_hold_seconds,
+                         show_intro=show_intro,intro_mode=intro_mode,
+                         intro_hold_seconds=intro_hold_seconds,
+                         intro_transition_seconds=intro_transition_seconds)
             st.session_state.result_video=video_path.read_bytes()
             st.session_state.result_name=f'painting_{model.style}.mp4'
         st.success('MP4 готов. Чтобы изменить оформление, поменяй настройки и экспортируй заново.')
